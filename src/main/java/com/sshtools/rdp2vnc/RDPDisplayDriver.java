@@ -1,7 +1,5 @@
 package com.sshtools.rdp2vnc;
 
-import java.awt.BorderLayout;
-import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.Graphics;
@@ -15,15 +13,13 @@ import java.awt.event.KeyListener;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.awt.event.MouseMotionListener;
+import java.awt.event.MouseWheelEvent;
 import java.awt.event.MouseWheelListener;
 import java.awt.image.BufferedImage;
 import java.awt.image.IndexColorModel;
 import java.util.EventListener;
 import java.util.logging.Logger;
 
-import javax.swing.ImageIcon;
-import javax.swing.JFrame;
-import javax.swing.JLabel;
 import javax.swing.event.EventListenerList;
 
 import com.sshtools.javardp.Display;
@@ -32,6 +28,7 @@ import com.sshtools.javardp.RdpCursor;
 import com.sshtools.javardp.rdp5.cliprdr.ClipChannel;
 import com.sshtools.rfbcommon.RFBConstants;
 import com.sshtools.rfbcommon.ScreenData;
+import com.sshtools.rfbcommon.ScreenDimension;
 import com.sshtools.rfbserver.DisplayDriver;
 import com.sshtools.rfbserver.RFBClient;
 import com.sshtools.rfbserver.drivers.AbstractDisplayDriver;
@@ -351,6 +348,7 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 	@Override
 	public void mouseEvent(RFBClient client, int buttonMask, int x, int y) {
 		if (x != pointer.getX() || y != pointer.getY()) {
+			mouseMoved(x, y);
 			pointer.setX(x);
 			pointer.setY(y);
 			EventListener[] l = uiListeners.getListeners(MouseMotionListener.class);
@@ -365,18 +363,29 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 		// event
 		if (buttonMask != this.buttonMask) {
 			EventListener[] l = uiListeners.getListeners(MouseListener.class);
+			EventListener[] w = uiListeners.getListeners(MouseWheelListener.class);
 			for (int i = 0; i < 8; i++) {
 				int bitval = 1 << i;
 				boolean is = (buttonMask & bitval) != 0;
 				boolean was = (this.buttonMask & bitval) != 0;
 				if (is != was) {
-					for (int j = l.length - 1; j >= 0; j--) {
+					if (i == 3 || i == 4) {
 						if (is) {
-							((MouseListener) l[j]).mousePressed(new MouseEvent(fakeComponent, MouseEvent.MOUSE_PRESSED,
-									System.currentTimeMillis(), keyMods, x, y, 0, i == 2, i + 1));
-						} else {
-							((MouseListener) l[j]).mouseReleased(new MouseEvent(fakeComponent, MouseEvent.MOUSE_RELEASED,
-									System.currentTimeMillis(), keyMods, x, y, 0, i == 2, i + 1));
+							for (int j = w.length - 1; j >= 0; j--) {
+								((MouseWheelListener) w[j]).mouseWheelMoved(new MouseWheelEvent(fakeComponent,
+										MouseEvent.MOUSE_WHEEL, System.currentTimeMillis(), keyMods, x, y, 0, 0, 1, false,
+										MouseWheelEvent.WHEEL_UNIT_SCROLL, i == 3 ? -1 : 1, i == 3 ? -1 : 1));
+							}
+						}
+					} else {
+						for (int j = l.length - 1; j >= 0; j--) {
+							if (is) {
+								((MouseListener) l[j]).mousePressed(new MouseEvent(fakeComponent, MouseEvent.MOUSE_PRESSED,
+										System.currentTimeMillis(), keyMods, x, y, 0, i == 2, i + 1));
+							} else {
+								((MouseListener) l[j]).mouseReleased(new MouseEvent(fakeComponent, MouseEvent.MOUSE_RELEASED,
+										System.currentTimeMillis(), keyMods, x, y, 0, i == 2, i + 1));
+							}
 						}
 					}
 				}
@@ -413,7 +422,7 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 			cy = 1;
 		if (cx < 1)
 			cx = 1;
-		fireDamageEvent("Repaint", new Rectangle(x, y, cx, cy), false, -1);
+		fireDamageEvent("Repaint", new Rectangle(x, y, cx, cy), -1);
 	}
 
 	@Override
@@ -422,38 +431,11 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 	}
 
 	//
-	private JFrame previewFrame;
-	private JLabel previewLabel;
-	private JLabel previewLabel2;
-
 	@Override
 	public void setCursor(RdpCursor cursor) {
 		if (cursor == null) {
 			clearCursor();
 		} else {
-			// BufferedImage bim = new
-			// BufferedImage(cursor.getData().getWidth(null),
-			// cursor.getData().getHeight(null),
-			// BufferedImage.TYPE_INT_ARGB);
-			// bim.getGraphics().drawImage(cursor.getData(), 0, 0, null);
-			// pointer.setHotX(cursor.getHotspot().x);
-			// pointer.setHotY(cursor.getHotspot().y);
-			// pointer.setHeight(bim.getHeight());
-			// pointer.setWidth(bim.getWidth());
-			// pointer.setData(bim);
-			if (previewFrame == null) {
-				previewFrame = new JFrame("Preview");
-				previewLabel = new JLabel();
-				previewLabel2 = new JLabel();
-				previewFrame.getContentPane().setLayout(new BorderLayout());
-				previewFrame.getContentPane().add(previewLabel, BorderLayout.EAST);
-				previewFrame.getContentPane().add(previewLabel2, BorderLayout.WEST);
-				previewFrame.getContentPane().setBackground(Color.red);
-				previewFrame.setSize(100, 100);
-				previewFrame.setVisible(true);
-			}
-			// previewLabel.setIcon(new ImageIcon(bim));
-			previewLabel2.setIcon(new ImageIcon(cursor.getData()));
 			pointer.setHotX(cursor.getHotspot().x);
 			pointer.setHotY(cursor.getHotspot().y);
 			pointer.setHeight(cursor.getData().getHeight(null));
@@ -524,7 +506,7 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 
 	@Override
 	public void repaint() {
-		fireDamageEvent("FullRepaint", new Rectangle(0, 0, getDisplayWidth(), getDisplayHeight()), false, -1);
+		fireDamageEvent("FullRepaint", new Rectangle(0, 0, getDisplayWidth(), getDisplayHeight()), -1);
 	}
 
 	@Override
@@ -545,6 +527,6 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 	}
 
 	public void serverResize(int width, int height, boolean clientInitiated) {
-		fireScreenBoundsChanged(new Rectangle(0, 0, width, height), clientInitiated);
+		fireScreenBoundsChanged(new ScreenData(new ScreenDimension(width, height)), clientInitiated);
 	}
 }

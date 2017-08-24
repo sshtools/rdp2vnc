@@ -34,11 +34,14 @@ import com.sshtools.javardp.keymapping.KeyMapException;
 import com.sshtools.javardp.rdp5.Rdp5;
 import com.sshtools.javardp.rdp5.VChannels;
 import com.sshtools.javardp.rdp5.cliprdr.ClipChannel;
+import com.sshtools.javardp.rdp5.display.DisplayControlChannel;
 import com.sshtools.rfbserver.DisplayDriver;
 import com.sshtools.rfbserver.RFBServer;
 import com.sshtools.rfbserver.RFBServerConfiguration;
 import com.sshtools.rfbserver.drivers.CopyRectDisplayDriver;
 import com.sshtools.rfbserver.drivers.WindowedDisplayDriver;
+import com.sshtools.rfbserver.encodings.authentication.None;
+import com.sshtools.rfbserver.encodings.authentication.Tight;
 import com.sshtools.rfbserver.encodings.authentication.VNC;
 import com.sshtools.rfbserver.transport.RFBServerTransportFactory;
 import com.sshtools.rfbserver.transport.ServerSocketRFBServerTransportFactory;
@@ -66,10 +69,13 @@ public class RDP2VNC implements RFBServerConfiguration {
 	private static final char OPT_PASSWORD = 'p';
 	private static final char OPT_KEYMAP = 'k';
 	private static final char OPT_SSL = 'S';
+	private static final char OPT_STAY_CONNECTED = 'Y';
+	private static final char OPT_RETRY_TIME = 'R';
 	private static final char OPT_PACKET_ENCRYPTION = 'E';
 	private static final char OPT_CONSOLE = 'C';
 	private static final char OPT_COMMAND = 'c';
 	private static final char OPT_DIRECTORY = 'D';
+	private static final char OPT_TIGHT_AUTH = 't';
 	static Logger LOG;
 	private CommandLine cli;
 	private DisplayDriver driver;
@@ -137,6 +143,12 @@ public class RDP2VNC implements RFBServerConfiguration {
 				new Option(String.valueOf(OPT_COMMAND), "command", true, "Run this command upon logon to the target RDP server."));
 		options.addOption(new Option(String.valueOf(OPT_DIRECTORY), "directory", true,
 				"Directory to be placed in upon logon to the target RDP server."));
+		options.addOption(new Option(String.valueOf(OPT_SSL), "stay-connected", false,
+				"Keep trying to connect to the RDP server if it cannot be contacted. See also --retry-time."));
+		options.addOption(new Option(String.valueOf(OPT_RETRY_TIME), "retry-time", true,
+				"How often to try and reconnect to the RDP when a connection is lost or cannot be made."));
+		options.addOption(new Option(String.valueOf(OPT_TIGHT_AUTH), "tight-authentication", false,
+				"Enabled tight authentication (also presents capabilities). This is disabled by default for compatibility."));
 	}
 
 	protected IContext createRDPContext() {
@@ -214,8 +226,15 @@ public class RDP2VNC implements RFBServerConfiguration {
 					channels.register(clipChannel);
 					underlyingDriver.setClipChannel(clipChannel);
 				} catch (RdesktopException rde) {
-					throw new IOException("Could not initialise RD5.");
+					throw new IOException("Could not initialise clip channel.");
 				}
+			}
+			DisplayControlChannel dcc = new DisplayControlChannel(ctx, options);
+			try {
+				channels.register(dcc);
+				// underlyingDriver.setClipChannel(clipChannel);
+			} catch (RdesktopException rde) {
+				throw new IOException("Could not initialise display control channel.");
 			}
 		}
 		// canvas.addFocusListener(clipChannel);
@@ -250,13 +269,27 @@ public class RDP2VNC implements RFBServerConfiguration {
 			}
 			/* Start the RFB server */
 			server = new RFBServer(this, driver);
-			if (password != null) {
-				server.getSecurityHandlers().add(new VNC() {
-					@Override
-					protected char[] getPassword() {
-						return password;
-					}
-				});
+			if (!cli.hasOption(OPT_TIGHT_AUTH)) {
+				if (password != null) {
+					server.getSecurityHandlers().add(new VNC() {
+						@Override
+						protected char[] getPassword() {
+							return password;
+						}
+					});
+				}
+			} else {
+				Tight tight = new Tight();
+				tight.getAuthenticationMethods().add(new None());
+				if (password != null) {
+					tight.getAuthenticationMethods().add(new VNC() {
+						@Override
+						protected char[] getPassword() {
+							return password;
+						}
+					});
+				}
+				server.getSecurityHandlers().add(tight);
 			}
 			server.init(serverTransportFactory);
 			new Thread("RFBServer") {
@@ -265,10 +298,9 @@ public class RDP2VNC implements RFBServerConfiguration {
 						server.start();
 					} catch (IOException e) {
 						LOG.error("RFB Server exited with failure.", e);
-					}		
+					}
 				}
 			}.start();
-			
 			/* Run RDP loop */
 			boolean[] deactivated = new boolean[1];
 			int[] ext_disc_reason = new int[1];
@@ -416,10 +448,8 @@ public class RDP2VNC implements RFBServerConfiguration {
 							"Viewport must either be a single monitor number or a string specifying the bounds of the viewport in the format <X>,<Y>,<Width>,<Height>");
 				}
 				driver = windowedDriver;
-			}
-			else
+			} else
 				driver = underlyingDriver;
-			
 			// Add the CopyRect driver
 			if (!cli.hasOption(OPT_NO_COPY_RECT)) {
 				driver = new CopyRectDisplayDriver(driver);
@@ -565,7 +595,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 		}
 		return bui.toString();
 	}
-	
+
 	private static String nonBlank(String str) {
 		return str == null ? "" : str;
 	}
