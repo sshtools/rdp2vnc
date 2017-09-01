@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.SocketException;
 import java.net.URL;
+import java.util.prefs.Preferences;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.GnuParser;
@@ -24,18 +25,20 @@ import com.sshtools.javardp.AbstractContext;
 import com.sshtools.javardp.ConnectionException;
 import com.sshtools.javardp.IContext;
 import com.sshtools.javardp.OrderException;
-import com.sshtools.javardp.RdesktopCanvas;
+import com.sshtools.javardp.RdesktopDisconnectException;
 import com.sshtools.javardp.RdesktopException;
 import com.sshtools.javardp.Rdp;
+import com.sshtools.javardp.State;
 import com.sshtools.javardp.client.Rdesktop;
 import com.sshtools.javardp.crypto.CryptoException;
+import com.sshtools.javardp.graphics.RdesktopCanvas;
+import com.sshtools.javardp.io.DefaultIO;
 import com.sshtools.javardp.keymapping.KeyCode_FileBased;
 import com.sshtools.javardp.keymapping.KeyMapException;
-import com.sshtools.javardp.rdp5.Rdp5;
 import com.sshtools.javardp.rdp5.VChannels;
 import com.sshtools.javardp.rdp5.cliprdr.ClipChannel;
-import com.sshtools.javardp.rdp5.display.DisplayControlChannel;
 import com.sshtools.rfbserver.DisplayDriver;
+import com.sshtools.rfbserver.RFBClient;
 import com.sshtools.rfbserver.RFBServer;
 import com.sshtools.rfbserver.RFBServerConfiguration;
 import com.sshtools.rfbserver.drivers.CopyRectDisplayDriver;
@@ -68,14 +71,16 @@ public class RDP2VNC implements RFBServerConfiguration {
 	private static final char OPT_USERNAME = 'u';
 	private static final char OPT_PASSWORD = 'p';
 	private static final char OPT_KEYMAP = 'k';
-	private static final char OPT_SSL = 'S';
+	private static final char OPT_NO_SSL = 'S';
 	private static final char OPT_STAY_CONNECTED = 'Y';
 	private static final char OPT_RETRY_TIME = 'R';
-	private static final char OPT_PACKET_ENCRYPTION = 'E';
+	private static final char OPT_NO_PACKET_ENCRYPTION = 'E';
 	private static final char OPT_CONSOLE = 'C';
 	private static final char OPT_COMMAND = 'c';
 	private static final char OPT_DIRECTORY = 'D';
 	private static final char OPT_TIGHT_AUTH = 't';
+	private static final char OPT_4 = '4';
+	private static final char OPT_BPP = 'B';
 	static Logger LOG;
 	private CommandLine cli;
 	private DisplayDriver driver;
@@ -129,29 +134,32 @@ public class RDP2VNC implements RFBServerConfiguration {
 				"Maximum number of incoming connections that are allowed. Only applies in 'listen' mode"));
 		options.addOption(new Option(String.valueOf(OPT_DOMAIN), "domain", true,
 				"The optional windows domain to authenticate with. If not supplied, the default will be used."));
-		options.addOption(new Option(String.valueOf(OPT_DOMAIN), "username", true,
+		options.addOption(new Option(String.valueOf(OPT_USERNAME), "username", true,
 				"The optional windows username to authenticate with. If not supplied, the user will be prompted."));
 		options.addOption(new Option(String.valueOf(OPT_PASSWORD), "password", true,
 				"The optional windows password to authenticate with. If not supplied, the user will be prompted."));
 		options.addOption(new Option(String.valueOf(OPT_KEYMAP), "keymap", true, "The keyboard map. Defaults to en-us."));
-		options.addOption(new Option(String.valueOf(OPT_SSL), "ssl", false,
-				"Enable SSL encryption between the RDP2VNC server and the RDP target."));
-		options.addOption(new Option(String.valueOf(OPT_PACKET_ENCRYPTION), "packet-encryption", false,
-				"Enable packet encryption between the RDP2VNC server and the RDP target."));
+		options.addOption(new Option(String.valueOf(OPT_NO_SSL), "no-ssl", false,
+				"Disable SSL encryption between the RDP2VNC server and the RDP target."));
+		options.addOption(new Option(String.valueOf(OPT_NO_PACKET_ENCRYPTION), "no-packet-encryption", false,
+				"Display packet encryption between the RDP2VNC server and the RDP target."));
 		options.addOption(new Option(String.valueOf(OPT_CONSOLE), "console", false, "Connect to the target RDP server's console."));
 		options.addOption(
 				new Option(String.valueOf(OPT_COMMAND), "command", true, "Run this command upon logon to the target RDP server."));
 		options.addOption(new Option(String.valueOf(OPT_DIRECTORY), "directory", true,
 				"Directory to be placed in upon logon to the target RDP server."));
-		options.addOption(new Option(String.valueOf(OPT_SSL), "stay-connected", false,
+		options.addOption(new Option(String.valueOf(OPT_STAY_CONNECTED), "stay-connected", false,
 				"Keep trying to connect to the RDP server if it cannot be contacted. See also --retry-time."));
 		options.addOption(new Option(String.valueOf(OPT_RETRY_TIME), "retry-time", true,
 				"How often to try and reconnect to the RDP when a connection is lost or cannot be made."));
 		options.addOption(new Option(String.valueOf(OPT_TIGHT_AUTH), "tight-authentication", false,
 				"Enabled tight authentication (also presents capabilities). This is disabled by default for compatibility."));
+		options.addOption(new Option(String.valueOf(OPT_4), "4", false, "Use RDP version 4 only."));
+		options.addOption(new Option(String.valueOf(OPT_BPP), "bpp", false,
+				"Colour depth in bits per pixel for RDP connection. By default the VNC connection will be matched to this."));
 	}
 
-	protected IContext createRDPContext() {
+	protected IContext createRDPContext(final State state) {
 		return new AbstractContext() {
 			private RdesktopCanvas canvas;
 
@@ -204,24 +212,43 @@ public class RDP2VNC implements RFBServerConfiguration {
 			public void registerDrawingSurface() {
 				getRdp().registerDrawingSurface(canvas);
 			}
+
+			@Override
+			public boolean getLockingKeyState(int vk) {
+				// TODO simulate
+				return super.getLockingKeyState(vk);
+			}
+
+			@Override
+			public byte[] loadLicense() throws IOException {
+				Preferences prefs = Preferences.userNodeForPackage(this.getClass());
+				return prefs.getByteArray("licence." + state.getClientName(), null);
+			}
+
+			@Override
+			public void saveLicense(byte[] license) throws IOException {
+				Preferences prefs = Preferences.userNodeForPackage(this.getClass());
+				prefs.putByteArray("licence." + state.getClientName(), license);
+			}
 		};
 	}
 
 	protected void start() throws Exception {
 		com.sshtools.javardp.Options options = createRDPOptions();
 		KeyCode_FileBased keyMap = createKeymap(options);
-		IContext ctx = createRDPContext();
+		State state = new State(options);
+		IContext ctx = createRDPContext(state);
 		/*
 		 * Create a canvas. This actually draws to the RFB servers display
 		 * buffer and fires damage events when rectangles are painted. This
 		 * means we don't need to do any polling in the RFB server itself as the
 		 * problem is solved on the target RDP server itself.
 		 */
-		RdesktopCanvas canvas = new RdesktopCanvas(ctx, options, 800, 600, underlyingDriver);
-		VChannels channels = new VChannels(options);
-		ClipChannel clipChannel = new ClipChannel(ctx, options);
-		if (options.use_rdp5) {
-			if (options.map_clipboard) {
+		RdesktopCanvas canvas = new RdesktopCanvas(ctx, state, underlyingDriver);
+		VChannels channels = new VChannels(state);
+		ClipChannel clipChannel = new ClipChannel(ctx, state);
+		if (state.isRDP5()) {
+			if (options.isMapClipboard()) {
 				try {
 					channels.register(clipChannel);
 					underlyingDriver.setClipChannel(clipChannel);
@@ -229,37 +256,33 @@ public class RDP2VNC implements RFBServerConfiguration {
 					throw new IOException("Could not initialise clip channel.");
 				}
 			}
-			DisplayControlChannel dcc = new DisplayControlChannel(ctx, options);
-			try {
-				channels.register(dcc);
-				// underlyingDriver.setClipChannel(clipChannel);
-			} catch (RdesktopException rde) {
-				throw new IOException("Could not initialise display control channel.");
-			}
+			// DisplayControlChannel dcc = new DisplayControlChannel(ctx,
+			// options);
+			// try {
+			// channels.register(dcc);
+			// underlyingDriver.setDisplayControlChannel(dcc);
+			// } catch (RdesktopException rde) {
+			// throw new IOException("Could not initialise display control
+			// channel.");
+			// }
 		}
 		// canvas.addFocusListener(clipChannel);
 		// Configure a keyboard layout
 		if (keyMap != null)
 			canvas.registerKeyboard(keyMap);
-		String serverName = options.hostname;
-		Rdp5 rdpLayer = new Rdp5(ctx, options, channels);
+		Rdp rdpLayer = new Rdp(ctx, state, channels);
 		ctx.setRdp(rdpLayer);
 		ctx.registerDrawingSurface();
 		canvas.registerCommLayer(rdpLayer);
-		if (serverName.equalsIgnoreCase("localhost"))
-			serverName = "127.0.0.1";
-		LOG.info("Connecting to " + serverName + ":" + options.port + " ...");
+		if (address.equalsIgnoreCase("localhost"))
+			address = "127.0.0.1";
+		LOG.info("Connecting to " + address + ":" + port + " ...");
 		if (keyMap != null)
 			canvas.registerKeyboard(keyMap);
 		// Attempt to connect to RDP server on port Options.port
 		try {
-			int logonflags = Rdp.RDP_LOGON_NORMAL;
-			if (options.password != null && options.password.length() > 0)
-				logonflags |= Rdp.RDP_LOGON_AUTO;
-			rdpLayer.connect(options.username, InetAddress.getByName(serverName), logonflags, options.domain, options.password,
-					options.command, options.directory);
-			if (!options.packet_encryption)
-				options.encryption = false;
+			rdpLayer.connect(options.getUsername(), new DefaultIO(InetAddress.getByName(address), port), options.getDomain(),
+					options.getPassword(), options.getCommand(), options.getDirectory());
 			LOG.info("Connection successful");
 			/* Initialise the driver */
 			try {
@@ -268,7 +291,13 @@ public class RDP2VNC implements RFBServerConfiguration {
 				throw new IOException("Driver initialisation problem.", e1);
 			}
 			/* Start the RFB server */
-			server = new RFBServer(this, driver);
+			server = new RFBServer(this, driver) {
+				@Override
+				protected RFBClient createClient() {
+					RFBClient c = super.createClient();
+					return c;
+				}
+			};
 			if (!cli.hasOption(OPT_TIGHT_AUTH)) {
 				if (password != null) {
 					server.getSecurityHandlers().add(new VNC() {
@@ -301,23 +330,12 @@ public class RDP2VNC implements RFBServerConfiguration {
 					}
 				}
 			}.start();
+			
 			/* Run RDP loop */
-			boolean[] deactivated = new boolean[1];
-			int[] ext_disc_reason = new int[1];
-			rdpLayer.mainLoop(deactivated, ext_disc_reason);
-			if (deactivated[0]) {
-				/* clean disconnect */
-			} else {
-				if (ext_disc_reason[0] == Rdesktop.exDiscReasonAPIInitiatedDisconnect
-						|| ext_disc_reason[0] == Rdesktop.exDiscReasonAPIInitiatedLogoff) {
-					/*
-					 * not so clean disconnect, but nothing to worry about
-					 */
-				}
-				if (ext_disc_reason[0] >= 2) {
-					String reason = Rdesktop.textDisconnectReason(ext_disc_reason[0]);
-					LOG.error("Connection terminated: " + reason);
-				}
+			try {
+				rdpLayer.mainLoop();
+			} catch (RdesktopDisconnectException rde) {
+				LOG.error("Connection terminated: " + rde.getMessage(), rde);
 			}
 		} catch (ConnectionException e) {
 			throw new IOException(e.getMessage(), e);
@@ -329,6 +347,9 @@ public class RDP2VNC implements RFBServerConfiguration {
 			throw new IOException("Encryption problem.", e1);
 		} catch (OrderException e1) {
 			throw new IOException("Order problem.", e1);
+		} finally {
+			if(server != null && server.isStarted())
+				server.stop();
 		}
 	}
 
@@ -355,7 +376,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 			if (istr != null)
 				istr.close();
 		}
-		options.keylayout = keyMap.getMapCode();
+		options.setKeylayout(keyMap.getMapCode());
 		return keyMap;
 	}
 
@@ -363,38 +384,40 @@ public class RDP2VNC implements RFBServerConfiguration {
 		com.sshtools.javardp.Options options = new com.sshtools.javardp.Options();
 		String username = this.cli.getOptionValue(OPT_USERNAME);
 		String password = this.cli.getOptionValue(OPT_PASSWORD);
-		options.domain = nonBlank(this.cli.getOptionValue(OPT_DOMAIN));
+		options.setDomain(nonBlank(this.cli.getOptionValue(OPT_DOMAIN)));
 		if (username != null) {
 			int idx = username.indexOf('\\');
 			if (idx != -1) {
-				options.domain = username.substring(0, idx);
+				options.setDomain(username.substring(0, idx));
 				username = username.substring(idx + 1);
 			}
-			options.username = username;
+			options.setUsername(username);
 		}
 		if (password != null) {
-			options.password = password;
+			options.setPassword(password.toCharArray());
 		}
-		options.hostname = address;
 		// Configure other options
-		options.width = width & ~3;
-		options.height = height;
-		options.packet_encryption = cli.hasOption(OPT_PACKET_ENCRYPTION);
-		options.use_rdp5 = true;
-		options.set_bpp(16);
-		options.use_ssl = cli.hasOption(OPT_SSL);
-		options.console_session = cli.hasOption(OPT_CONSOLE);
-		options.directory = nonBlank(cli.getOptionValue(OPT_DIRECTORY));
-		options.command = nonBlank(cli.getOptionValue(OPT_COMMAND));
-		options.fullscreen = cli.hasOption(OPT_FULL_SCREEN);
-		options.port = port;
+		options.setWidth(width);
+		options.setHeight(height);
+		options.setPacketEncryption(!cli.hasOption(OPT_NO_PACKET_ENCRYPTION));
+		int bpp = 16;
+		if (cli.hasOption(OPT_BPP)) {
+			bpp = Integer.parseInt(cli.getOptionValue(OPT_BPP));
+		}
+		options.setBpp(bpp);
+		options.setRdp5(!cli.hasOption(OPT_4));
+		options.setSsl(!cli.hasOption(OPT_NO_SSL));
+		options.setConsoleSession(cli.hasOption(OPT_CONSOLE));
+		options.setDirectory(nonBlank(cli.getOptionValue(OPT_DIRECTORY)));
+		options.setCommand(nonBlank(cli.getOptionValue(OPT_COMMAND)));
+		options.setFullscreen(cli.hasOption(OPT_FULL_SCREEN));
 		// TODO
-		options.remap_hash = true;
-		options.altkey_quiet = false;
-		options.persistent_bitmap_caching = false;
-		options.load_licence = false;
-		options.save_licence = false;
-		options.low_latency = false;
+		options.setRemapHash(true);
+		options.setAltkeyQuiet(false);
+		options.setPersistentBitmapCaching(false);
+		options.setLoadLicence(true);
+		options.setSaveLicence(false);
+		options.setLowLatency(false);
 		return options;
 	}
 

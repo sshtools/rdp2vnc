@@ -17,17 +17,24 @@ import java.awt.event.MouseWheelEvent;
 import java.awt.event.MouseWheelListener;
 import java.awt.image.BufferedImage;
 import java.awt.image.IndexColorModel;
+import java.util.ArrayList;
 import java.util.EventListener;
-import java.util.logging.Logger;
+import java.util.List;
 
 import javax.swing.event.EventListenerList;
 
-import com.sshtools.javardp.Display;
-import com.sshtools.javardp.RdesktopCanvas;
-import com.sshtools.javardp.RdpCursor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.sshtools.javardp.graphics.Display;
+import com.sshtools.javardp.graphics.RdesktopCanvas;
+import com.sshtools.javardp.graphics.RdpCursor;
 import com.sshtools.javardp.rdp5.cliprdr.ClipChannel;
+import com.sshtools.javardp.rdp5.display.DisplayControlChannel;
+import com.sshtools.javardp.rdp5.display.MonitorLayout;
 import com.sshtools.rfbcommon.RFBConstants;
 import com.sshtools.rfbcommon.ScreenData;
+import com.sshtools.rfbcommon.ScreenDetail;
 import com.sshtools.rfbcommon.ScreenDimension;
 import com.sshtools.rfbserver.DisplayDriver;
 import com.sshtools.rfbserver.RFBClient;
@@ -38,11 +45,12 @@ import com.sshtools.rfbserver.drivers.AbstractDisplayDriver;
  * and and RDP viewer {@link Display}, gluing the two together.
  */
 public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
-	final static Logger LOG = Logger.getLogger(RDPDisplayDriver.class.getName());
+	final static Logger LOG = LoggerFactory.getLogger(RDPDisplayDriver.class);
 	private IndexColorModel cm = null;
 	private BufferedImage bi = null;
 	private EventListenerList uiListeners = new EventListenerList();
 	private ClipChannel clipChannel;
+	private DisplayControlChannel displayControlChannel;
 	private RdesktopCanvas canvas;
 	private PointerShape pointer;
 	private Clipboard clipboard;
@@ -64,6 +72,14 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 		clipboard = new Clipboard("RDPClient" + (++seq));
 		pointer = new PointerShape();
 		clearCursor();
+	}
+
+	public DisplayControlChannel getDisplayControlChannel() {
+		return displayControlChannel;
+	}
+
+	public void setDisplayControlChannel(DisplayControlChannel displayControlChannel) {
+		this.displayControlChannel = displayControlChannel;
 	}
 
 	public ClipChannel getClipChannel() {
@@ -157,7 +173,7 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 			int[] vals = { (pix >> 16) & 0xFF, (pix >> 8) & 0xFF, (pix) & 0xFF };
 			int out = cm.getDataElement(vals, 0);
 			if (cm.getRGB(out) != bi.getRGB(x, y))
-				LOG.warning("Did not get correct colour value for color (" + Integer.toHexString(pix) + "), got (" + cm.getRGB(out)
+				LOG.warn("Did not get correct colour value for color (" + Integer.toHexString(pix) + "), got (" + cm.getRGB(out)
 						+ ") instead");
 			return out;
 		}
@@ -166,7 +182,7 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 	@Override
 	public void resizeDisplay(Dimension dimension) {
 		BufferedImage bim = bi;
-		bi = new BufferedImage(dimension.width, dimension.height, bi.getType());
+		bi = new BufferedImage(Math.max(dimension.width, 1), Math.max(dimension.height, 1), bi.getType());
 		bi.getGraphics().drawImage(bim, 0, 0, null);
 	}
 
@@ -520,10 +536,26 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 	}
 
 	@Override
-	public void resize(ScreenData screen) {
-		bi = new BufferedImage(screen.getDimension().getWidth(), screen.getDimension().getHeight(), bi.getType());
-		canvas.backingStoreResize(bi.getWidth(), bi.getHeight(), true);
-		LOG.info(String.format("TODO: Send this resize on to RDP server", screen.getDimension()));
+	public boolean resize(ScreenData screen) {
+		if (displayControlChannel != null && displayControlChannel.isInitialised()) {
+			List<ScreenDetail> l = screen.getAllDetails();
+			List<MonitorLayout> m = new ArrayList<MonitorLayout>(l.size());
+			int n = 0;
+			for (ScreenDetail d : l) {
+				m.add(new MonitorLayout(n == 0, d.getX(), d.getY(), d.getWidth(), d.getHeight()));
+				n++;
+			}
+			try {
+				LOG.info(String.format("Sending new size data to to RDP server %dx%d", screen.getWidth(), screen.getHeight()));
+				displayControlChannel.sendDisplayControlCaps(m);
+				canvas.backingStoreResize(bi.getWidth(), bi.getHeight(), true);
+				return true;
+			} catch (Exception e) {
+				// TODO should disconnect?
+				LOG.error("Failed to set remote desktop size.", e);
+			}
+		}
+		return false;
 	}
 
 	public void serverResize(int width, int height, boolean clientInitiated) {
