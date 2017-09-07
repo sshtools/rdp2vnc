@@ -23,14 +23,15 @@ import org.slf4j.LoggerFactory;
 
 import com.sshtools.javardp.AbstractContext;
 import com.sshtools.javardp.ConnectionException;
+import com.sshtools.javardp.DefaultCredentialsProvider;
 import com.sshtools.javardp.IContext;
 import com.sshtools.javardp.OrderException;
 import com.sshtools.javardp.RdesktopDisconnectException;
 import com.sshtools.javardp.RdesktopException;
 import com.sshtools.javardp.Rdp;
+import com.sshtools.javardp.SecurityType;
 import com.sshtools.javardp.State;
 import com.sshtools.javardp.client.Rdesktop;
-import com.sshtools.javardp.crypto.CryptoException;
 import com.sshtools.javardp.graphics.RdesktopCanvas;
 import com.sshtools.javardp.io.DefaultIO;
 import com.sshtools.javardp.keymapping.KeyCode_FileBased;
@@ -72,6 +73,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 	private static final char OPT_PASSWORD = 'p';
 	private static final char OPT_KEYMAP = 'k';
 	private static final char OPT_NO_SSL = 'S';
+	private static final char OPT_NO_NLA = 'A';
 	private static final char OPT_STAY_CONNECTED = 'Y';
 	private static final char OPT_RETRY_TIME = 'R';
 	private static final char OPT_NO_PACKET_ENCRYPTION = 'E';
@@ -81,6 +83,8 @@ public class RDP2VNC implements RFBServerConfiguration {
 	private static final char OPT_TIGHT_AUTH = 't';
 	private static final char OPT_4 = '4';
 	private static final char OPT_BPP = 'B';
+	private static final char OPT_DEBUG_HEX = 'H';
+	
 	static Logger LOG;
 	private CommandLine cli;
 	private DisplayDriver driver;
@@ -94,7 +98,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 	private int listenPort = 5900;
 	private int backlog;
 	private RFBServer server;
-	private char[] password;
+	private char[] vncPassword;
 	private int imageType = BufferedImage.TYPE_INT_ARGB;
 	private int width;
 	private int height;
@@ -140,7 +144,9 @@ public class RDP2VNC implements RFBServerConfiguration {
 				"The optional windows password to authenticate with. If not supplied, the user will be prompted."));
 		options.addOption(new Option(String.valueOf(OPT_KEYMAP), "keymap", true, "The keyboard map. Defaults to en-us."));
 		options.addOption(new Option(String.valueOf(OPT_NO_SSL), "no-ssl", false,
-				"Disable SSL encryption between the RDP2VNC server and the RDP target."));
+				"Disable SSL encryption between the RDP2VNC server and the RDP target (implies --no-nla)."));
+		options.addOption(new Option(String.valueOf(OPT_NO_NLA), "no-nla", false,
+				"Disable usage of Network Level Authentication (NLA) the RDP2VNC server and the RDP target."));
 		options.addOption(new Option(String.valueOf(OPT_NO_PACKET_ENCRYPTION), "no-packet-encryption", false,
 				"Display packet encryption between the RDP2VNC server and the RDP target."));
 		options.addOption(new Option(String.valueOf(OPT_CONSOLE), "console", false, "Connect to the target RDP server's console."));
@@ -157,6 +163,8 @@ public class RDP2VNC implements RFBServerConfiguration {
 		options.addOption(new Option(String.valueOf(OPT_4), "4", false, "Use RDP version 4 only."));
 		options.addOption(new Option(String.valueOf(OPT_BPP), "bpp", false,
 				"Colour depth in bits per pixel for RDP connection. By default the VNC connection will be matched to this."));
+		options.addOption(new Option(String.valueOf(OPT_DEBUG_HEX), "debug-hex", false,
+				"Output hexdumps of packets that arrive and are sent."));
 	}
 
 	protected IContext createRDPContext(final State state) {
@@ -222,13 +230,13 @@ public class RDP2VNC implements RFBServerConfiguration {
 			@Override
 			public byte[] loadLicense() throws IOException {
 				Preferences prefs = Preferences.userNodeForPackage(this.getClass());
-				return prefs.getByteArray("licence." + state.getClientName(), null);
+				return prefs.getByteArray("licence." + state.getWorkstationName(), null);
 			}
 
 			@Override
 			public void saveLicense(byte[] license) throws IOException {
 				Preferences prefs = Preferences.userNodeForPackage(this.getClass());
-				prefs.putByteArray("licence." + state.getClientName(), license);
+				prefs.putByteArray("licence." + state.getWorkstationName(), license);
 			}
 		};
 	}
@@ -279,10 +287,15 @@ public class RDP2VNC implements RFBServerConfiguration {
 		LOG.info("Connecting to " + address + ":" + port + " ...");
 		if (keyMap != null)
 			canvas.registerKeyboard(keyMap);
-		// Attempt to connect to RDP server on port Options.port
+
 		try {
-			rdpLayer.connect(options.getUsername(), new DefaultIO(InetAddress.getByName(address), port), options.getDomain(),
-					options.getPassword(), options.getCommand(), options.getDirectory());
+			DefaultCredentialsProvider dcp = new DefaultCredentialsProvider();
+			dcp.setUsername(this.cli.getOptionValue(OPT_USERNAME));
+			String passwordStr = this.cli.getOptionValue(OPT_PASSWORD);
+			dcp.setPassword(passwordStr == null || passwordStr.length() == 0 ? null : passwordStr.toCharArray());
+			dcp.setDomain(nonBlank(this.cli.getOptionValue(OPT_DOMAIN)));
+			rdpLayer.connect(new DefaultIO(InetAddress.getByName(address), port), dcp, options.getCommand(),
+					options.getDirectory());
 			LOG.info("Connection successful");
 			/* Initialise the driver */
 			try {
@@ -299,22 +312,22 @@ public class RDP2VNC implements RFBServerConfiguration {
 				}
 			};
 			if (!cli.hasOption(OPT_TIGHT_AUTH)) {
-				if (password != null) {
+				if (vncPassword != null) {
 					server.getSecurityHandlers().add(new VNC() {
 						@Override
 						protected char[] getPassword() {
-							return password;
+							return vncPassword;
 						}
 					});
 				}
 			} else {
 				Tight tight = new Tight();
 				tight.getAuthenticationMethods().add(new None());
-				if (password != null) {
+				if (vncPassword != null) {
 					tight.getAuthenticationMethods().add(new VNC() {
 						@Override
 						protected char[] getPassword() {
-							return password;
+							return vncPassword;
 						}
 					});
 				}
@@ -330,7 +343,6 @@ public class RDP2VNC implements RFBServerConfiguration {
 					}
 				}
 			}.start();
-			
 			/* Run RDP loop */
 			try {
 				rdpLayer.mainLoop();
@@ -343,12 +355,8 @@ public class RDP2VNC implements RFBServerConfiguration {
 			throw s;
 		} catch (RdesktopException e) {
 			throw new IOException("Desktop protocol problem.", e);
-		} catch (CryptoException e1) {
-			throw new IOException("Encryption problem.", e1);
-		} catch (OrderException e1) {
-			throw new IOException("Order problem.", e1);
 		} finally {
-			if(server != null && server.isStarted())
+			if (server != null && server.isStarted())
 				server.stop();
 		}
 	}
@@ -382,20 +390,6 @@ public class RDP2VNC implements RFBServerConfiguration {
 
 	protected com.sshtools.javardp.Options createRDPOptions() throws IOException {
 		com.sshtools.javardp.Options options = new com.sshtools.javardp.Options();
-		String username = this.cli.getOptionValue(OPT_USERNAME);
-		String password = this.cli.getOptionValue(OPT_PASSWORD);
-		options.setDomain(nonBlank(this.cli.getOptionValue(OPT_DOMAIN)));
-		if (username != null) {
-			int idx = username.indexOf('\\');
-			if (idx != -1) {
-				options.setDomain(username.substring(0, idx));
-				username = username.substring(idx + 1);
-			}
-			options.setUsername(username);
-		}
-		if (password != null) {
-			options.setPassword(password.toCharArray());
-		}
 		// Configure other options
 		options.setWidth(width);
 		options.setHeight(height);
@@ -406,16 +400,32 @@ public class RDP2VNC implements RFBServerConfiguration {
 		}
 		options.setBpp(bpp);
 		options.setRdp5(!cli.hasOption(OPT_4));
-		options.setSsl(!cli.hasOption(OPT_NO_SSL));
+		if (cli.hasOption(OPT_NO_SSL)) {
+			for (SecurityType t : SecurityType.supported()) {
+				if (t.isSSL()) {
+					options.getSecurityTypes().remove(t);
+				}
+			}
+		}
+		if (cli.hasOption(OPT_NO_NLA)) {
+			for (SecurityType t : SecurityType.supported()) {
+				if (t.isNLA()) {
+					options.getSecurityTypes().remove(t);
+				}
+			}
+		}
+		options.getSecurityTypes().remove(SecurityType.STANDARD);
+		
 		options.setConsoleSession(cli.hasOption(OPT_CONSOLE));
 		options.setDirectory(nonBlank(cli.getOptionValue(OPT_DIRECTORY)));
 		options.setCommand(nonBlank(cli.getOptionValue(OPT_COMMAND)));
 		options.setFullscreen(cli.hasOption(OPT_FULL_SCREEN));
+		options.setDebugHexdump(cli.hasOption(OPT_DEBUG_HEX));
 		// TODO
 		options.setRemapHash(true);
 		options.setAltkeyQuiet(false);
 		options.setPersistentBitmapCaching(false);
-		options.setLoadLicence(true);
+		options.setLoadLicence(false);
 		options.setSaveLicence(false);
 		options.setLowLatency(false);
 		return options;
@@ -509,12 +519,12 @@ public class RDP2VNC implements RFBServerConfiguration {
 			if (cli.hasOption(OPT_VNC_PASSWORD_FILE)) {
 				BufferedReader in = new BufferedReader(new FileReader(cli.getOptionValue(OPT_VNC_PASSWORD_FILE)));
 				try {
-					password = in.readLine().toCharArray();
+					vncPassword = in.readLine().toCharArray();
 				} finally {
 					in.close();
 				}
 			} else if (cli.hasOption(OPT_VNC_PASSWORD)) {
-				password = cli.getOptionValue(OPT_VNC_PASSWORD).toCharArray();
+				vncPassword = cli.getOptionValue(OPT_VNC_PASSWORD).toCharArray();
 			}
 			// Listen address (where VNC clients connect)
 			String listenAddressStr = cli.getOptionValue(OPT_LISTEN_ADDRESS);
