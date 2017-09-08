@@ -25,10 +25,8 @@ import com.sshtools.javardp.AbstractContext;
 import com.sshtools.javardp.ConnectionException;
 import com.sshtools.javardp.DefaultCredentialsProvider;
 import com.sshtools.javardp.IContext;
-import com.sshtools.javardp.OrderException;
 import com.sshtools.javardp.RdesktopDisconnectException;
 import com.sshtools.javardp.RdesktopException;
-import com.sshtools.javardp.Rdp;
 import com.sshtools.javardp.SecurityType;
 import com.sshtools.javardp.State;
 import com.sshtools.javardp.client.Rdesktop;
@@ -36,6 +34,7 @@ import com.sshtools.javardp.graphics.RdesktopCanvas;
 import com.sshtools.javardp.io.DefaultIO;
 import com.sshtools.javardp.keymapping.KeyCode_FileBased;
 import com.sshtools.javardp.keymapping.KeyMapException;
+import com.sshtools.javardp.layers.Rdp;
 import com.sshtools.javardp.rdp5.VChannels;
 import com.sshtools.javardp.rdp5.cliprdr.ClipChannel;
 import com.sshtools.rfbserver.DisplayDriver;
@@ -84,7 +83,6 @@ public class RDP2VNC implements RFBServerConfiguration {
 	private static final char OPT_4 = '4';
 	private static final char OPT_BPP = 'B';
 	private static final char OPT_DEBUG_HEX = 'H';
-	
 	static Logger LOG;
 	private CommandLine cli;
 	private DisplayDriver driver;
@@ -169,8 +167,6 @@ public class RDP2VNC implements RFBServerConfiguration {
 
 	protected IContext createRDPContext(final State state) {
 		return new AbstractContext() {
-			private RdesktopCanvas canvas;
-
 			@Override
 			public void toggleFullScreen() {
 				// TODO pass this on to VNC?
@@ -186,10 +182,6 @@ public class RDP2VNC implements RFBServerConfiguration {
 			}
 
 			@Override
-			public void hideMenu() {
-			}
-
-			@Override
 			public void error(Exception e, boolean sysexit) {
 				if (sysexit)
 					LOG.error("An error occured occured in the display.", e);
@@ -200,31 +192,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 
 			@Override
 			public void dispose() {
-			}
-
-			@Override
-			public void exit() {
-			}
-
-			@Override
-			public void init(RdesktopCanvas canvas) {
-				this.canvas = canvas;
-			}
-
-			@Override
-			public void triggerReadyToSend() {
-				canvas.triggerReadyToSend();
-			}
-
-			@Override
-			public void registerDrawingSurface() {
-				getRdp().registerDrawingSurface(canvas);
-			}
-
-			@Override
-			public boolean getLockingKeyState(int vk) {
-				// TODO simulate
-				return super.getLockingKeyState(vk);
+				// TODO close the VNC connection
 			}
 
 			@Override
@@ -238,12 +206,15 @@ public class RDP2VNC implements RFBServerConfiguration {
 				Preferences prefs = Preferences.userNodeForPackage(this.getClass());
 				prefs.putByteArray("licence." + state.getWorkstationName(), license);
 			}
+
+			@Override
+			public void readyToSend() {
+			}
 		};
 	}
 
 	protected void start() throws Exception {
 		com.sshtools.javardp.Options options = createRDPOptions();
-		KeyCode_FileBased keyMap = createKeymap(options);
 		State state = new State(options);
 		IContext ctx = createRDPContext(state);
 		/*
@@ -254,7 +225,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 		 */
 		RdesktopCanvas canvas = new RdesktopCanvas(ctx, state, underlyingDriver);
 		VChannels channels = new VChannels(state);
-		ClipChannel clipChannel = new ClipChannel(ctx, state);
+		ClipChannel clipChannel = new ClipChannel();
 		if (state.isRDP5()) {
 			if (options.isMapClipboard()) {
 				try {
@@ -276,18 +247,8 @@ public class RDP2VNC implements RFBServerConfiguration {
 		}
 		// canvas.addFocusListener(clipChannel);
 		// Configure a keyboard layout
-		if (keyMap != null)
-			canvas.registerKeyboard(keyMap);
 		Rdp rdpLayer = new Rdp(ctx, state, channels);
-		ctx.setRdp(rdpLayer);
-		ctx.registerDrawingSurface();
-		canvas.registerCommLayer(rdpLayer);
-		if (address.equalsIgnoreCase("localhost"))
-			address = "127.0.0.1";
 		LOG.info("Connecting to " + address + ":" + port + " ...");
-		if (keyMap != null)
-			canvas.registerKeyboard(keyMap);
-
 		try {
 			DefaultCredentialsProvider dcp = new DefaultCredentialsProvider();
 			dcp.setUsername(this.cli.getOptionValue(OPT_USERNAME));
@@ -384,7 +345,6 @@ public class RDP2VNC implements RFBServerConfiguration {
 			if (istr != null)
 				istr.close();
 		}
-		options.setKeylayout(keyMap.getMapCode());
 		return keyMap;
 	}
 
@@ -415,16 +375,15 @@ public class RDP2VNC implements RFBServerConfiguration {
 			}
 		}
 		options.getSecurityTypes().remove(SecurityType.STANDARD);
-		
 		options.setConsoleSession(cli.hasOption(OPT_CONSOLE));
 		options.setDirectory(nonBlank(cli.getOptionValue(OPT_DIRECTORY)));
 		options.setCommand(nonBlank(cli.getOptionValue(OPT_COMMAND)));
 		options.setFullscreen(cli.hasOption(OPT_FULL_SCREEN));
 		options.setDebugHexdump(cli.hasOption(OPT_DEBUG_HEX));
+		options.setKeymap(createKeymap(options));
 		// TODO
 		options.setRemapHash(true);
 		options.setAltkeyQuiet(false);
-		options.setPersistentBitmapCaching(false);
 		options.setLoadLicence(false);
 		options.setSaveLicence(false);
 		options.setLowLatency(false);
@@ -576,6 +535,8 @@ public class RDP2VNC implements RFBServerConfiguration {
 					}
 				}
 			}
+			if (address.equalsIgnoreCase("localhost"))
+				address = "127.0.0.1";
 			// Output some info about the options chosen
 			LOG.info("Driver: " + driver);
 			LOG.info("Transport: " + serverTransportFactory.getClass().getSimpleName());

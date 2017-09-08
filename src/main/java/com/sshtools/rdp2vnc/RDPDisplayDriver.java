@@ -561,4 +561,10 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 	public void serverResize(int width, int height, boolean clientInitiated) {
 		fireScreenBoundsChanged(new ScreenData(new ScreenDimension(width, height)), clientInitiated);
 	}
+
+	@Override
+	public boolean getLockingKeyState(int vk) {
+		// TODO Can we get this for VNC? Maybe it can be simulated
+		return false;
+	}
 }
