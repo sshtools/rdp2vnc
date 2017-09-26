@@ -208,7 +208,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 			}
 
 			@Override
-			public void readyToSend() {
+			public void ready(ReadyType ready) {
 			}
 		};
 	}
@@ -374,7 +374,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 				}
 			}
 		}
-		options.getSecurityTypes().remove(SecurityType.STANDARD);
+//		options.getSecurityTypes().remove(SecurityType.STANDARD);
 		options.setConsoleSession(cli.hasOption(OPT_CONSOLE));
 		options.setDirectory(nonBlank(cli.getOptionValue(OPT_DIRECTORY)));
 		options.setCommand(nonBlank(cli.getOptionValue(OPT_COMMAND)));

@@ -304,7 +304,7 @@ public class RDPDisplayDriver extends AbstractDisplayDriver implements Display {
 			break;
 		default:
 			keychar = (char) key;
-			if ((keychar >= 'A' && keychar <= 'Z') || (keychar >= '0' && keychar <= '9'))
+			if (keychar == ' ' || (keychar >= 'A' && keychar <= 'Z') || (keychar >= '0' && keychar <= '9'))
 				keycode = keychar;
 			else if (keychar >= 'a' && keychar <= 'z')
 				keycode = keychar - 'a' + 'A';
