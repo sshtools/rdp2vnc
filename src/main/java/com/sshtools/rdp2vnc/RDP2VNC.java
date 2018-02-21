@@ -501,7 +501,7 @@ public class RDP2VNC implements RFBServerConfiguration {
 					int idx = listenAddress.indexOf(':');
 					if (idx != -1) {
 						try {
-							listenPort = Integer.parseInt(address.substring(idx + 1));
+							listenPort = Integer.parseInt(listenAddress.substring(idx + 1));
 						} catch (NumberFormatException nfe2) {
 							throw new ParseException("Invalid port number.");
 						}
